@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# rhino8 — launch Rhino 8 under the patched Wine.
+#
+# Usage:
+#   rhino8                 start Rhino
+#   rhino8 model.3dm       open a file
+#   rhino8 --fresh         restart the wineserver first (fixes licensing on port 1717)
+#   rhino8 --stop          kill everything in the Rhino prefix
+#
+# Environment overrides:
+#   RHINO_PREFIX   Wine prefix (default: ~/.local/share/wineprefixes/rhino8)
+#   RHINO_WINE     Wine binary (default: ~/.local/share/wine-rhino/bin/wine)
+#
+set -euo pipefail
+
+export WINEPREFIX="${RHINO_PREFIX:-$HOME/.local/share/wineprefixes/rhino8}"
+WINE="${RHINO_WINE:-$HOME/.local/share/wine-rhino/bin/wine}"
+WINESERVER="$(dirname "$WINE")/wineserver"
+RHINO_EXE="$WINEPREFIX/drive_c/Program Files/Rhino 8/System/Rhino.exe"
+LOG="${XDG_CACHE_HOME:-$HOME/.cache}/rhino8-wine-fedora/rhino.log"
+
+[ -x "$WINE" ] || { echo "error: Wine not found at $WINE (run install.sh)" >&2; exit 1; }
+[ -f "$RHINO_EXE" ] || { echo "error: Rhino not installed in $WINEPREFIX (run install.sh)" >&2; exit 1; }
+
+case "${1:-}" in
+    -h|--help) sed -n '3,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --stop)  "$WINESERVER" -k; echo "Rhino prefix stopped."; exit 0 ;;
+    --fresh) "$WINESERVER" -k 2>/dev/null || true; "$WINESERVER" -w 2>/dev/null || true; sleep 1; shift ;;
+esac
+
+# Convert Linux paths to Z: drive paths so Rhino can open them.
+args=()
+for a in "$@"; do
+    a="${a#file://}"
+    if [ -e "$a" ]; then
+        p="$(readlink -f "$a")"
+        args+=("Z:${p//\//\\}")
+    else
+        args+=("$a")
+    fi
+done
+
+mkdir -p "$(dirname "$LOG")"
+export WINEDEBUG="${WINEDEBUG:--all}"
+export DISPLAY="${DISPLAY:-:0}"          # force the X11 driver (XWayland); winewayland is less mature
+export WINE_DISABLE_CLIP_CURSOR=1        # avoids sticky cursor on multi-monitor/Wayland
+export DOTNET_EnableWriteXorExecute=0    # avoids W^X VirtualProtect overhead in the .NET JIT under Wine
+unset LD_PRELOAD                         # keep host preloads out of the browser Rhino spawns for sign-in
+
+cd "$(dirname "$RHINO_EXE")"
+exec "$WINE" "$RHINO_EXE" "${args[@]}" 2>"$LOG"
